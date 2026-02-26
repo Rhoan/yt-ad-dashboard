@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+*.pyd
+*.tmp
+*.mp4
+*.webm
+*.mkv
+/tmp/
