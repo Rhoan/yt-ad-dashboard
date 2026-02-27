@@ -85,23 +85,27 @@ with st.sidebar:
     st.title("YouTube Ad Dashboard")
     st.markdown("---")
 
-    # Run buttons
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Run Mock", use_container_width=True):
-            with st.spinner("Running mock analysis..."):
-                run_batch(mock=True)
-            _reload()
-    with c2:
-        if st.button("Run Real\n~$0.20", use_container_width=True, type="primary"):
-            with st.spinner("Running real analysis (~$0.20)..."):
-                run_batch(mock=False)
-            _reload()
+    # Run buttons — only shown when running locally
+    _is_local = not st.context.headers.get("host", "").endswith(".streamlit.app")
+    if _is_local:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Run Mock", use_container_width=True):
+                with st.spinner("Running mock analysis..."):
+                    run_batch(mock=True)
+                _reload()
+        with c2:
+            if st.button("Run Real\n~$2.00", use_container_width=True, type="primary"):
+                with st.spinner("Running real analysis (~$2.00)..."):
+                    run_batch(mock=False)
+                _reload()
 
-    if st.button("Reset Cache", use_container_width=True):
-        if CACHE_PATH.exists():
-            CACHE_PATH.unlink()
-        _reload()
+        if st.button("Reset Cache", use_container_width=True):
+            if CACHE_PATH.exists():
+                CACHE_PATH.unlink()
+            _reload()
+    else:
+        st.caption("Analysis runs locally only.")
 
     st.markdown("---")
 
@@ -300,7 +304,7 @@ with tab3:
         # Sortable table
         st.subheader("All Videos")
         TABLE_COLS = [
-            "title", "uploader", "view_count", "duration",
+            "title", "uploader", "platform", "view_count", "duration",
             "tone", "theme", "has_cta", "cost_usd", "webpage_url",
         ]
         table_df = df[[c for c in TABLE_COLS if c in df.columns]].copy()

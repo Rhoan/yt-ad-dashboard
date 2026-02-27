@@ -1,12 +1,12 @@
 """
 batch_analyzer.py — Batch YouTube Ad Analysis Pipeline
 
-Searches for 20 kitchen/home-remodeling ads, analyzes each with Claude Vision,
-and writes results to ads_cache.json. Supports incremental runs (only new videos
-are analyzed on subsequent invocations).
+Searches for 200 home-remodeling ads across YouTube (primary) and Dailymotion
+(fallback), analyzes each with Claude Vision, and writes results to
+ads_cache.json. Supports incremental runs (only new videos are analyzed).
 
 Usage:
-    python batch_analyzer.py           # real Claude (~$0.20 total)
+    python batch_analyzer.py           # real Claude (~$2.00 total)
     python batch_analyzer.py --mock    # dummy labels, free
     python batch_analyzer.py --reset   # delete cache and re-run all
 """
@@ -25,7 +25,6 @@ import tempfile
 import time
 from pathlib import Path
 
-# Import the single-video pipeline as a module (no code duplication)
 from analyze_one_ad import (
     PYTHON_EXE,
     FRAME_INTERVAL_SEC,
@@ -44,42 +43,123 @@ from analyze_one_ad import (
 # ---------------------------------------------------------------------------
 # Search configuration
 # ---------------------------------------------------------------------------
-QUERIES = [
-    # Kitchen-specific (primary)
-    "kitchen remodel before after advertisement",
-    "kitchen renovation commercial ad",
-    "kitchen makeover tv commercial",
-    "kitchen cabinet remodel ad commercial",
-    "kitchen redesign advertisement",
-    "new kitchen installation commercial",
-    # Home remodeling fallbacks (used once kitchen queries are exhausted)
-    "bathroom renovation before after ad",
-    "bathroom remodel tv commercial",
-    "home remodeling commercial advertisement",
-    "home renovation tv commercial",
-    "basement remodel commercial ad",
-    "room addition remodel commercial",
-    "house renovation before after advertisement",
-    "home improvement contractor commercial",
-    "flooring renovation commercial ad",
-]
-TARGET = 20
-VIDEOS_PER_QUERY = 6
-MIN_VIEWS = 1_000
+TARGET = 200
+VIDEOS_PER_QUERY = 15
+MIN_VIEWS = 500
 MAX_DURATION = 180
 MIN_DURATION = 15
 
 CACHE_PATH = Path(__file__).parent / "ads_cache.json"
 
+# YouTube queries — ordered from most to least specific
+YOUTUBE_QUERIES = [
+    # Kitchen (primary focus)
+    "kitchen remodel before after advertisement",
+    "kitchen renovation commercial ad",
+    "kitchen makeover tv commercial",
+    "kitchen cabinet remodel ad commercial",
+    "kitchen redesign advertisement",
+    "kitchen countertop replacement commercial",
+    "custom kitchen installation commercial",
+    "kitchen remodeling company ad spot",
+    "dream kitchen renovation commercial",
+    "kitchen transformation before after ad",
+    # Bathroom
+    "bathroom renovation before after ad",
+    "bathroom remodel tv commercial",
+    "bathroom makeover commercial",
+    "walk-in shower installation commercial",
+    "bathtub replacement ad commercial",
+    "bathroom tile renovation commercial",
+    "master bath remodel commercial",
+    "bathroom vanity replacement ad",
+    # Basement & flooring
+    "basement remodel commercial ad",
+    "basement finishing renovation commercial",
+    "hardwood floor installation commercial",
+    "flooring renovation commercial ad",
+    "carpet replacement home commercial",
+    "tile floor installation ad",
+    # Windows, doors, roofing, exterior
+    "window replacement commercial advertisement",
+    "door replacement home improvement ad",
+    "roofing commercial advertisement",
+    "siding replacement home commercial",
+    "deck patio renovation commercial",
+    "garage door replacement commercial",
+    # HVAC, insulation, smart home
+    "HVAC replacement home commercial ad",
+    "home insulation renovation commercial",
+    "smart home renovation commercial ad",
+    # General home remodeling
+    "home remodeling commercial advertisement",
+    "home renovation tv commercial",
+    "house renovation before after advertisement",
+    "home improvement contractor commercial",
+    "general contractor renovation commercial",
+    "home makeover renovation ad",
+    "whole home renovation commercial",
+    "room addition remodel commercial",
+    "home remodel before after tv spot",
+    "house makeover commercial ad",
+    # Big box & design brands
+    "Home Depot renovation commercial",
+    "Lowes home improvement commercial",
+    "home design build remodel commercial",
+    "kitchen bath showroom commercial",
+    "home remodeling franchise commercial",
+    # Interior & outdoor living
+    "interior design renovation commercial",
+    "open plan living renovation ad",
+    "outdoor kitchen renovation commercial",
+    "landscaping renovation commercial ad",
+    "fence installation commercial ad",
+    "pool installation commercial advertisement",
+    # Specialty trades
+    "plumbing renovation commercial ad",
+    "electrical upgrade home commercial",
+    "painting contractor commercial ad",
+    "stucco siding renovation commercial",
+    "attic insulation commercial ad",
+    "solar panel home installation commercial",
+    # Financing & services
+    "home improvement loan commercial",
+    "home warranty renovation commercial",
+    "home staging renovation ad",
+]
+
+# Dailymotion queries — used only after YouTube is exhausted
+DAILYMOTION_QUERIES = [
+    "kitchen remodel advertisement",
+    "bathroom renovation commercial",
+    "home remodeling ad",
+    "house renovation commercial",
+    "kitchen makeover ad",
+    "home improvement commercial",
+    "flooring renovation ad",
+    "window replacement advertisement",
+    "basement remodel commercial",
+    "roofing commercial ad",
+]
+
 
 # =============================================================================
-# SECTION 1 — search_videos(query, n) -> list[dict]
+# SECTION 1 — search_videos(query, n, platform) -> list[dict]
 # =============================================================================
-def search_videos(query: str, n: int = VIDEOS_PER_QUERY) -> list[dict]:
-    """Search YouTube for up to n videos; filter by duration and views."""
+def search_videos(
+    query: str, n: int = VIDEOS_PER_QUERY, platform: str = "youtube"
+) -> list[dict]:
+    """Search for n videos on the given platform; apply duration/view filters."""
+    if platform == "youtube":
+        search_url = f"ytsearch{n}:{query}"
+    elif platform == "dailymotion":
+        search_url = f"https://www.dailymotion.com/search/{query.replace(' ', '%20')}/videos"
+    else:
+        return []
+
     cmd = [
         PYTHON_EXE, "-m", "yt_dlp",
-        f"ytsearch{n}:{query}",
+        search_url,
         "--print", (
             "%(id)s\t%(title)s\t%(view_count)s\t%(like_count)s"
             "\t%(comment_count)s\t%(uploader)s\t%(upload_date)s"
@@ -94,7 +174,7 @@ def search_videos(query: str, n: int = VIDEOS_PER_QUERY) -> list[dict]:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
     except subprocess.TimeoutExpired:
-        print(f"  [WARN] Search timed out for query: {query!r}")
+        print(f"  [WARN] Search timed out: {platform} / {query!r}")
         return []
 
     videos = []
@@ -104,15 +184,16 @@ def search_videos(query: str, n: int = VIDEOS_PER_QUERY) -> list[dict]:
             continue
         try:
             v = {
-                "id": parts[0].strip(),
-                "title": parts[1].strip(),
-                "view_count": int(parts[2]) if parts[2] not in ("NA", "None", "") else 0,
-                "like_count": int(parts[3]) if parts[3] not in ("NA", "None", "") else 0,
+                "id":            parts[0].strip(),
+                "title":         parts[1].strip(),
+                "view_count":    int(parts[2]) if parts[2] not in ("NA", "None", "") else 0,
+                "like_count":    int(parts[3]) if parts[3] not in ("NA", "None", "") else 0,
                 "comment_count": int(parts[4]) if parts[4] not in ("NA", "None", "") else 0,
-                "uploader": parts[5].strip(),
-                "upload_date": parts[6].strip(),
-                "webpage_url": parts[7].strip(),
-                "duration": int(parts[8]) if parts[8] not in ("NA", "None", "") else 0,
+                "uploader":      parts[5].strip(),
+                "upload_date":   parts[6].strip(),
+                "webpage_url":   parts[7].strip(),
+                "duration":      int(parts[8]) if parts[8] not in ("NA", "None", "") else 0,
+                "platform":      platform,
             }
             if MIN_DURATION <= v["duration"] <= MAX_DURATION and v["view_count"] >= MIN_VIEWS:
                 videos.append(v)
@@ -123,30 +204,42 @@ def search_videos(query: str, n: int = VIDEOS_PER_QUERY) -> list[dict]:
 
 
 # =============================================================================
-# SECTION 2 — collect_candidates(queries, target) -> list[dict]
+# SECTION 2 — collect_candidates(target) -> list[dict]
 # =============================================================================
-def collect_candidates(
-    queries: list[str] = QUERIES,
-    target: int = TARGET,
-) -> list[dict]:
-    """Loop queries, deduplicate by video_id, stop at target unique videos."""
+def collect_candidates(target: int = TARGET) -> list[dict]:
+    """
+    Collect up to target unique videos.
+    1. Try all YouTube queries first.
+    2. If still short, try Dailymotion queries as fallback.
+    """
     seen_ids: set[str] = set()
     candidates: list[dict] = []
 
-    for query in queries:
-        if len(candidates) >= target:
-            break
-        print(f"Searching: {query!r}")
-        videos = search_videos(query)
-        added = 0
-        for v in videos:
-            if v["id"] not in seen_ids:
-                seen_ids.add(v["id"])
-                candidates.append(v)
-                added += 1
-                if len(candidates) >= target:
-                    break
-        print(f"  -> {len(videos)} results, +{added} new  ({len(candidates)} total)")
+    def _run_queries(queries, platform):
+        for query in queries:
+            if len(candidates) >= target:
+                break
+            print(f"[{platform}] {query!r}")
+            videos = search_videos(query, platform=platform)
+            added = 0
+            for v in videos:
+                if v["id"] not in seen_ids:
+                    seen_ids.add(v["id"])
+                    candidates.append(v)
+                    added += 1
+                    if len(candidates) >= target:
+                        break
+            print(f"  -> {len(videos)} results, +{added} new ({len(candidates)} total)")
+
+    print(f"\n--- YouTube queries ({len(YOUTUBE_QUERIES)} queries) ---")
+    _run_queries(YOUTUBE_QUERIES, "youtube")
+
+    if len(candidates) < target:
+        print(f"\n--- Dailymotion fallback ({len(DAILYMOTION_QUERIES)} queries) ---")
+        _run_queries(DAILYMOTION_QUERIES, "dailymotion")
+
+    if len(candidates) < target:
+        print(f"\n[WARN] Only found {len(candidates)} unique candidates (target: {target})")
 
     return candidates[:target]
 
@@ -156,13 +249,8 @@ def collect_candidates(
 # =============================================================================
 _TONES = ["upbeat", "serious", "inspirational", "urgent", "calm"]
 _EMOTIONAL_SETS = [
-    ["aspiration", "pride"],
-    ["trust", "family"],
-    ["fear", "aspiration"],
-    ["humor", "family"],
-    ["pride"],
-    ["aspiration", "trust"],
-    ["family", "pride"],
+    ["aspiration", "pride"], ["trust", "family"], ["fear", "aspiration"],
+    ["humor", "family"], ["pride"], ["aspiration", "trust"], ["family", "pride"],
 ]
 _THEMES = [
     "before_after_transformation", "lifestyle", "testimonial",
@@ -173,40 +261,38 @@ _HOOK_TYPES = [
     "shocking_stat", "offer", "celebrity",
 ]
 _NARRATOR = [
-    "voiceover", "on_screen_talent", "customer_testimonial",
-    "text_only", "mixed",
+    "voiceover", "on_screen_talent", "customer_testimonial", "text_only", "mixed",
 ]
-_PACING = ["fast_cuts", "medium", "slow_cinematic"]
-_PALETTES = ["warm", "cool", "neutral", "high_contrast"]
-_MUSIC = ["upbeat", "calm", "dramatic", "tense", "none"]
-_SETTINGS = ["interior", "exterior", "studio", "mixed"]
+_PACING    = ["fast_cuts", "medium", "slow_cinematic"]
+_PALETTES  = ["warm", "cool", "neutral", "high_contrast"]
+_MUSIC     = ["upbeat", "calm", "dramatic", "tense", "none"]
+_SETTINGS  = ["interior", "exterior", "studio", "mixed"]
 _CTA_TYPES = ["phone_number", "website", "visit_store", "limited_time_offer"]
-_REVEAL = ["early (<10s)", "mid (10-30s)", "late (>30s)", "never"]
+_REVEAL    = ["early (<10s)", "mid (10-30s)", "late (>30s)", "never"]
 _AUDIENCES = ["homeowners_general", "luxury", "budget_conscious", "diy", "families"]
 
 
 def _mock_labels(video_id: str, duration: int) -> dict:
-    """Generate deterministic varied mock labels seeded by video_id."""
     seed = int(hashlib.md5(video_id.encode()).hexdigest()[:8], 16)
     rng = random.Random(seed)
     has_cta = rng.random() > 0.3
     return {
-        "tone": rng.choice(_TONES),
-        "emotional_appeal": rng.choice(_EMOTIONAL_SETS),
-        "theme": rng.choice(_THEMES),
-        "product_reveal_timing": rng.choice(_REVEAL),
-        "hook_type": rng.choice(_HOOK_TYPES),
-        "narrator_type": rng.choice(_NARRATOR),
-        "pacing": rng.choice(_PACING),
-        "color_palette": rng.choice(_PALETTES),
-        "music_mood": rng.choice(_MUSIC),
-        "setting": rng.choice(_SETTINGS),
-        "has_cta": has_cta,
-        "cta_type": rng.choice(_CTA_TYPES) if has_cta else "none",
-        "has_before_after": rng.random() > 0.4,
-        "has_price_mention": rng.random() > 0.6,
-        "ad_length_seconds": duration,
-        "target_audience": rng.choice(_AUDIENCES),
+        "tone":                 rng.choice(_TONES),
+        "emotional_appeal":     rng.choice(_EMOTIONAL_SETS),
+        "theme":                rng.choice(_THEMES),
+        "product_reveal_timing":rng.choice(_REVEAL),
+        "hook_type":            rng.choice(_HOOK_TYPES),
+        "narrator_type":        rng.choice(_NARRATOR),
+        "pacing":               rng.choice(_PACING),
+        "color_palette":        rng.choice(_PALETTES),
+        "music_mood":           rng.choice(_MUSIC),
+        "setting":              rng.choice(_SETTINGS),
+        "has_cta":              has_cta,
+        "cta_type":             rng.choice(_CTA_TYPES) if has_cta else "none",
+        "has_before_after":     rng.random() > 0.4,
+        "has_price_mention":    rng.random() > 0.6,
+        "ad_length_seconds":    duration,
+        "target_audience":      rng.choice(_AUDIENCES),
     }
 
 
@@ -233,21 +319,21 @@ def analyze_video(video_meta: dict, mock: bool = False) -> dict:
             labels, usage = call_claude(content)
             labels["ad_length_seconds"] = video_meta["duration"]
 
-        input_tokens = getattr(usage, "input_tokens", 0)
+        input_tokens  = getattr(usage, "input_tokens", 0)
         output_tokens = getattr(usage, "output_tokens", 0)
         cost = (
-            input_tokens / 1_000_000 * INPUT_PRICE_PER_MTOK
+            input_tokens  / 1_000_000 * INPUT_PRICE_PER_MTOK
             + output_tokens / 1_000_000 * OUTPUT_PRICE_PER_MTOK
         )
 
         return {
             **video_meta,
             **labels,
-            "input_tokens": input_tokens,
+            "input_tokens":  input_tokens,
             "output_tokens": output_tokens,
-            "cost_usd": round(cost, 6),
-            "elapsed_sec": round(time.time() - t_start, 1),
-            "error": None,
+            "cost_usd":      round(cost, 6),
+            "elapsed_sec":   round(time.time() - t_start, 1),
+            "error":         None,
         }
 
     except Exception as exc:
@@ -262,11 +348,9 @@ def analyze_video(video_meta: dict, mock: bool = False) -> dict:
         return {
             **video_meta,
             **null_labels,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost_usd": 0.0,
-            "elapsed_sec": round(time.time() - t_start, 1),
-            "error": str(exc),
+            "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+            "elapsed_sec":  round(time.time() - t_start, 1),
+            "error":        str(exc),
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -276,7 +360,6 @@ def analyze_video(video_meta: dict, mock: bool = False) -> dict:
 # SECTION 5 — Cache I/O
 # =============================================================================
 def load_cache(path: Path = CACHE_PATH) -> list[dict]:
-    """Load existing cache; return empty list on missing or corrupt file."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -288,7 +371,7 @@ def load_cache(path: Path = CACHE_PATH) -> list[dict]:
 
 
 def save_cache(results: list[dict], path: Path = CACHE_PATH) -> None:
-    """Atomic write: write to .tmp then rename to avoid corrupt cache on crash."""
+    """Atomic write: .tmp then rename."""
     tmp_path = path.with_suffix(".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
@@ -296,32 +379,26 @@ def save_cache(results: list[dict], path: Path = CACHE_PATH) -> None:
 
 
 # =============================================================================
-# SECTION 6 — run_batch(cache_path, mock, reset) -> list[dict]
+# SECTION 6 — run_batch
 # =============================================================================
 def run_batch(
     cache_path: Path = CACHE_PATH,
     mock: bool = False,
     reset: bool = False,
 ) -> list[dict]:
-    """
-    Main batch runner.
-    - reset: delete existing cache and re-analyze all videos
-    - mock: use deterministic dummy labels (no API calls, free)
-    Returns final list of all results (cached + newly analyzed).
-    """
     if reset and cache_path.exists():
         cache_path.unlink()
         print("Cache deleted.")
 
-    existing = load_cache(cache_path)
+    existing   = load_cache(cache_path)
     cached_ids = {r["id"] for r in existing}
-    results = list(existing)
+    results    = list(existing)
 
     print(f"\nCollecting {TARGET} video candidates...")
-    candidates = collect_candidates()
+    candidates     = collect_candidates()
     new_candidates = [c for c in candidates if c["id"] not in cached_ids]
+    already_done   = len(cached_ids)
 
-    already_done = len(cached_ids)
     print(
         f"\n{already_done} already cached, "
         f"{len(new_candidates)} new to analyze (target: {TARGET})\n"
@@ -333,10 +410,11 @@ def run_batch(
 
     for i, video_meta in enumerate(new_candidates, start=1):
         global_n = already_done + i
-        total_n = already_done + len(new_candidates)
+        total_n  = already_done + len(new_candidates)
         print(
             f"\n[{global_n}/{total_n}] Analyzing: "
             f"{video_meta['title'][:60]} ({video_meta['duration']}s)"
+            f" [{video_meta.get('platform', 'youtube')}]"
         )
 
         row = analyze_video(video_meta, mock=mock)
@@ -362,15 +440,9 @@ def run_batch(
 # CLI
 # =============================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Batch YouTube Ad Analysis")
-    parser.add_argument(
-        "--mock", action="store_true",
-        help="Use deterministic dummy labels (no API calls, free)"
-    )
-    parser.add_argument(
-        "--reset", action="store_true",
-        help="Delete cache and re-analyze all videos"
-    )
+    parser = argparse.ArgumentParser(description="Batch Home Remodeling Ad Analysis")
+    parser.add_argument("--mock",  action="store_true", help="Dummy labels, no API calls")
+    parser.add_argument("--reset", action="store_true", help="Delete cache and re-run all")
     args = parser.parse_args()
 
     check_dependencies()
