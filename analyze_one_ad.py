@@ -374,12 +374,22 @@ def call_claude(content: list[dict]) -> tuple[dict, object]:
     print(f"Sending {sum(1 for c in content if c['type'] == 'image')} frames "
           f"+ transcript to {MODEL}...")
 
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
-    )
+    for attempt in range(5):
+        try:
+            message = client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": content}],
+            )
+            break
+        except Exception as exc:
+            if "429" in str(exc) and attempt < 4:
+                wait = 60 * (attempt + 1)
+                print(f"  [rate limit] waiting {wait}s (attempt {attempt+1}/5)...")
+                time.sleep(wait)
+            else:
+                raise
 
     raw = message.content[0].text
     # Strip markdown fences (same pattern as claude_agent.py)

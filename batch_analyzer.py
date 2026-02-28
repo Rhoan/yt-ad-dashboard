@@ -509,6 +509,12 @@ def run_batch(
         return results
 
     for i, video_meta in enumerate(new_candidates, start=1):
+        # Stop once we have TARGET successful analyses
+        successful = sum(1 for r in results if not r.get("error"))
+        if successful >= TARGET:
+            print(f"\nReached {TARGET} successful analyses — stopping.")
+            break
+
         global_n = already_done + i
         total_n  = already_done + len(new_candidates)
         print(
