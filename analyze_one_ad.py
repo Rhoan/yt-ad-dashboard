@@ -130,7 +130,8 @@ def find_ad_video(query: str) -> dict:
         "--ignore-errors",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
     # yt-dlp exits non-zero when any individual result is unavailable;
     # only fail hard if stdout is completely empty (no results at all)
     if not result.stdout.strip():
@@ -189,7 +190,8 @@ def download_video(url: str, out_dir: Path) -> Path:
         "--no-playlist",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
     if result.returncode != 0:
         raise RuntimeError(f"yt-dlp download failed:\n{result.stderr}")
 

@@ -43,7 +43,7 @@ from analyze_one_ad import (
 # ---------------------------------------------------------------------------
 # Search configuration
 # ---------------------------------------------------------------------------
-TARGET = 200
+TARGET = 1000
 VIDEOS_PER_QUERY = 15
 MIN_VIEWS = 500
 MAX_DURATION = 180
@@ -126,6 +126,93 @@ YOUTUBE_QUERIES = [
     "home improvement loan commercial",
     "home warranty renovation commercial",
     "home staging renovation ad",
+    # Home furnishing — living room
+    "furniture store commercial advertisement",
+    "sofa couch commercial ad",
+    "living room furniture commercial",
+    "sectional sofa commercial advertisement",
+    "recliner furniture commercial ad",
+    "Rooms To Go commercial",
+    "Ashley Furniture commercial advertisement",
+    "Wayfair furniture commercial ad",
+    "IKEA home furnishing commercial",
+    "Pottery Barn commercial advertisement",
+    # Home furnishing — bedroom
+    "bedroom furniture commercial advertisement",
+    "mattress commercial advertisement",
+    "memory foam mattress commercial ad",
+    "bed frame headboard commercial",
+    "Casper mattress commercial",
+    "Purple mattress commercial ad",
+    "Sleep Number commercial advertisement",
+    # Home furnishing — dining & storage
+    "dining room furniture commercial",
+    "dining table commercial advertisement",
+    "home storage furniture commercial",
+    "bookshelf shelving unit commercial ad",
+    "custom closet commercial advertisement",
+    "closet organization system commercial",
+    "garage storage organization commercial",
+    # Home decor
+    "home decor commercial advertisement",
+    "interior decorating commercial ad",
+    "area rug commercial advertisement",
+    "curtains blinds window treatment commercial",
+    "home lighting fixture commercial ad",
+    "ceiling fan installation commercial ad",
+    "wall art decor commercial advertisement",
+    "home accessories decor commercial",
+    # Kitchen appliances
+    "kitchen appliance commercial advertisement",
+    "refrigerator commercial advertisement",
+    "dishwasher commercial ad",
+    "range oven commercial advertisement",
+    "microwave commercial ad",
+    "kitchen renovation appliance commercial",
+    # Bathroom fixtures & accessories
+    "bathroom faucet commercial advertisement",
+    "kitchen faucet commercial ad",
+    "toilet replacement commercial advertisement",
+    "bathroom accessories commercial ad",
+    # Paint & wallpaper
+    "interior paint commercial advertisement",
+    "house painting commercial ad",
+    "Sherwin Williams commercial",
+    "Benjamin Moore paint commercial",
+    "wallpaper home decor commercial",
+    # Outdoor & patio furniture
+    "patio furniture commercial advertisement",
+    "outdoor furniture commercial ad",
+    "backyard patio set commercial",
+    "outdoor living space furniture commercial",
+    # Smart home & tech
+    "smart thermostat commercial advertisement",
+    "home security system commercial ad",
+    "smart lighting home commercial",
+    "Ring doorbell commercial",
+    "Nest thermostat commercial ad",
+    # Plumbing & water
+    "water heater replacement commercial ad",
+    "water filtration system home commercial",
+    "whole home water softener commercial",
+    # Specialty home brands
+    "West Elm commercial advertisement",
+    "Restoration Hardware RH commercial",
+    "Crate and Barrel commercial ad",
+    "Williams Sonoma home commercial",
+    "Pier 1 home decor commercial",
+    "HomeGoods commercial advertisement",
+    "TJMaxx home decor commercial",
+    "Tuesday Morning home commercial",
+    # Extra fill to reach 1000
+    "CB2 furniture commercial advertisement",
+    "Z Gallerie home decor commercial",
+    "World Market home decor commercial ad",
+    "Overstock furniture commercial advertisement",
+    "laminate flooring installation commercial",
+    "luxury vinyl plank flooring commercial",
+    "kitchen island installation commercial",
+    "home generator installation commercial ad",
 ]
 
 # Dailymotion queries — used only after YouTube is exhausted
@@ -172,7 +259,8 @@ def search_videos(
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired:
         print(f"  [WARN] Search timed out: {platform} / {query!r}")
         return []
@@ -206,37 +294,49 @@ def search_videos(
 # =============================================================================
 # SECTION 2 — collect_candidates(target) -> list[dict]
 # =============================================================================
+SEARCH_WORKERS = 8  # parallel yt-dlp processes during search phase
+
 def collect_candidates(target: int = TARGET) -> list[dict]:
     """
     Collect up to target unique videos.
-    1. Try all YouTube queries first.
+    1. Try all YouTube queries in parallel (SEARCH_WORKERS threads).
     2. If still short, try Dailymotion queries as fallback.
     """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     seen_ids: set[str] = set()
     candidates: list[dict] = []
+    lock = threading.Lock()
 
-    def _run_queries(queries, platform):
-        for query in queries:
-            if len(candidates) >= target:
-                break
-            print(f"[{platform}] {query!r}")
-            videos = search_videos(query, platform=platform)
-            added = 0
-            for v in videos:
-                if v["id"] not in seen_ids:
-                    seen_ids.add(v["id"])
-                    candidates.append(v)
-                    added += 1
+    def _search_one(query, platform):
+        return query, platform, search_videos(query, platform=platform)
+
+    def _run_queries_parallel(queries, platform):
+        with ThreadPoolExecutor(max_workers=SEARCH_WORKERS) as ex:
+            futures = {ex.submit(_search_one, q, platform): q for q in queries}
+            for fut in as_completed(futures):
+                query, plat, videos = fut.result()
+                with lock:
                     if len(candidates) >= target:
-                        break
-            print(f"  -> {len(videos)} results, +{added} new ({len(candidates)} total)")
+                        continue
+                    added = 0
+                    for v in videos:
+                        if v["id"] not in seen_ids:
+                            seen_ids.add(v["id"])
+                            candidates.append(v)
+                            added += 1
+                            if len(candidates) >= target:
+                                break
+                    print(f"[{plat}] {query!r}")
+                    print(f"  -> {len(videos)} results, +{added} new ({len(candidates)} total)")
 
-    print(f"\n--- YouTube queries ({len(YOUTUBE_QUERIES)} queries) ---")
-    _run_queries(YOUTUBE_QUERIES, "youtube")
+    print(f"\n--- YouTube queries ({len(YOUTUBE_QUERIES)} queries, {SEARCH_WORKERS} parallel) ---")
+    _run_queries_parallel(YOUTUBE_QUERIES, "youtube")
 
     if len(candidates) < target:
         print(f"\n--- Dailymotion fallback ({len(DAILYMOTION_QUERIES)} queries) ---")
-        _run_queries(DAILYMOTION_QUERIES, "dailymotion")
+        _run_queries_parallel(DAILYMOTION_QUERIES, "dailymotion")
 
     if len(candidates) < target:
         print(f"\n[WARN] Only found {len(candidates)} unique candidates (target: {target})")
