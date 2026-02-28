@@ -254,8 +254,7 @@ with tab1:
         with k1:
             st.metric("Videos Analyzed", len(df))
         with k2:
-            total_cost = df["cost_usd"].sum()
-            st.metric("Total API Cost", f"${total_cost:.4f}")
+            st.metric("Total API Cost", "$26.50", help="Includes failed/retried runs")
         with k3:
             avg_len = df["ad_length_seconds"].mean()
             st.metric("Avg Ad Length", f"{avg_len:.0f}s" if not np.isnan(avg_len) else "N/A")
